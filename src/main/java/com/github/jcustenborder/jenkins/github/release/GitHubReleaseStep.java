@@ -5,13 +5,13 @@ import com.google.common.io.Files;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.model.TaskListener;
-import hudson.util.DirScanner;
-import hudson.util.FileVisitor;
+import hudson.remoting.VirtualChannel;
 import org.apache.commons.lang.StringUtils;
 import org.jenkinsci.plugins.workflow.steps.AbstractStepDescriptorImpl;
 import org.jenkinsci.plugins.workflow.steps.AbstractStepImpl;
 import org.jenkinsci.plugins.workflow.steps.AbstractSynchronousNonBlockingStepExecution;
 import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
+import org.jenkinsci.remoting.RoleChecker;
 import org.kohsuke.github.GHAsset;
 import org.kohsuke.github.GHRelease;
 import org.kohsuke.github.GHReleaseBuilder;
@@ -258,64 +258,49 @@ public class GitHubReleaseStep extends AbstractStepImpl {
           this.step.excludes
       );
 
-      DirScanner scanner = new DirScanner.Glob(this.step.includes, this.step.excludes);
+      FilePath[] filePaths = this.cwd.list(this.step.includes, this.step.excludes);
 
-      this.listener.getLogger().printf(
-          "Setting scanner root to %s%n",
-          cwd.getRemote()
-      );
+      for (FilePath filePath : filePaths) {
+        filePath.act(new FilePath.FileCallable<Void>() {
+          @Override
+          public Void invoke(File file, VirtualChannel virtualChannel) throws IOException, InterruptedException {
+            Path path = file.toPath();
+            String contentType;
 
-      File f = new File(cwd.getRemote());
-      this.listener.getLogger().printf(
-          "Scanning %s%n",
-          f
-      );
+            listener.getLogger().printf(
+                "Probing contentType for %s.",
+                file
+            );
 
-      scanner.scan(f, new FileVisitor() {
-        @Override
-        public boolean understandsSymlink() {
-          return true;
-        }
+            try {
+              contentType = java.nio.file.Files.probeContentType(path);
+            } catch (IOException ex) {
+              contentType = "application/octet-stream";
+            }
 
-        @Override
-        public void visitSymlink(File link, String target, String relativePath) throws IOException {
-          listener.getLogger().printf(
-              "Visiting Symlink:%s %n",
-              link
-          );
-        }
+            listener.getLogger().printf(
+                "Uploading %s with contentType:%s %n",
+                file,
+                contentType
+            );
 
-        @Override
-        public void visit(File file, String s) throws IOException {
-          Path path = file.toPath();
-          String contentType;
+            GHAsset asset = release.uploadAsset(file, contentType);
 
-          listener.getLogger().printf(
-              "Probing contentType for %s.",
-              file
-          );
+            listener.getLogger().printf(
+                "Uploaded %s to %s %n",
+                file,
+                asset.getBrowserDownloadUrl()
+            );
 
-          try {
-            contentType = java.nio.file.Files.probeContentType(path);
-          } catch (IOException ex) {
-            contentType = "application/octet-stream";
+            return null;
           }
 
-          listener.getLogger().printf(
-              "Uploading %s with contentType:%s %n",
-              file,
-              contentType
-          );
+          @Override
+          public void checkRoles(RoleChecker roleChecker) throws SecurityException {
 
-          GHAsset asset = release.uploadAsset(file, contentType);
-
-          listener.getLogger().printf(
-              "Uploaded %s to %s %n",
-              file,
-              asset.getBrowserDownloadUrl()
-          );
-        }
-      });
+          }
+        });
+      }
 
       return release.getHtmlUrl().toString();
     }

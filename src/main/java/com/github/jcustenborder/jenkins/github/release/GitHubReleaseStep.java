@@ -3,12 +3,16 @@ package com.github.jcustenborder.jenkins.github.release;
 import com.google.common.base.Charsets;
 import com.google.common.io.Files;
 import hudson.Extension;
+import hudson.FilePath;
+import hudson.model.TaskListener;
 import hudson.util.DirScanner;
 import hudson.util.FileVisitor;
 import org.apache.commons.lang.StringUtils;
 import org.jenkinsci.plugins.workflow.steps.AbstractStepDescriptorImpl;
 import org.jenkinsci.plugins.workflow.steps.AbstractStepImpl;
 import org.jenkinsci.plugins.workflow.steps.AbstractSynchronousNonBlockingStepExecution;
+import org.jenkinsci.plugins.workflow.steps.StepContextParameter;
+import org.kohsuke.github.GHAsset;
 import org.kohsuke.github.GHRelease;
 import org.kohsuke.github.GHReleaseBuilder;
 import org.kohsuke.github.GHRepository;
@@ -139,6 +143,27 @@ public class GitHubReleaseStep extends AbstractStepImpl {
     this.tagName = tagName;
   }
 
+  /**
+   * Files to include
+   *
+   * @param includes Files to include
+   */
+  @DataBoundSetter
+  public void setIncludes(String includes) {
+    this.includes = includes;
+  }
+
+
+  /**
+   * Files to exclude
+   *
+   * @param excludes Files to exclude
+   */
+  @DataBoundSetter
+  public void setExcludes(String excludes) {
+    this.excludes = excludes;
+  }
+
   @Extension
   public static class DescriptorImpl extends AbstractStepDescriptorImpl {
 
@@ -164,6 +189,12 @@ public class GitHubReleaseStep extends AbstractStepImpl {
     @Inject
     private transient GitHubReleaseStep step;
 
+    @StepContextParameter
+    private transient FilePath cwd;
+
+    @StepContextParameter
+    private transient TaskListener listener;
+
     @Override
     protected String run() throws Exception {
       if (StringUtils.isBlank(this.step.token)) {
@@ -176,6 +207,10 @@ public class GitHubReleaseStep extends AbstractStepImpl {
 
       if (StringUtils.isBlank(this.step.tagName)) {
         throw new IllegalStateException("tagName cannot be blank.");
+      }
+
+      if (StringUtils.isBlank(this.step.includes)) {
+        throw new IllegalStateException("includes cannot be blank.");
       }
 
       if (StringUtils.isBlank(this.step.descriptionFile) && StringUtils.isBlank(this.step.description)) {
@@ -198,23 +233,67 @@ public class GitHubReleaseStep extends AbstractStepImpl {
       GHRepository repository = github.getRepository(this.step.repositoryName);
       GHReleaseBuilder releaseBuilder = repository.createRelease(this.step.tagName)
           .prerelease(this.step.preRelease)
+          .body(this.step.description)
           .draft(this.step.draft);
 
       if (!StringUtils.isBlank(this.step.commitish)) {
         releaseBuilder.commitish(this.step.commitish);
       }
 
+      this.listener.getLogger().printf(
+          "Creating release %s%n",
+          this.step.tagName
+      );
+
       final GHRelease release = releaseBuilder.create();
 
-      DirScanner scanner = new DirScanner.Glob(this.step.includes, this.step.excludes, true);
+      this.listener.getLogger().printf(
+          "Created release %s%n",
+          release.getHtmlUrl()
+      );
 
-      getContext().get()
+      this.listener.getLogger().printf(
+          "Creating scanner with includes = '%s' excludes = '%s'%n",
+          this.step.includes,
+          this.step.excludes
+      );
 
-      scanner.scan(File., new FileVisitor() {
+      DirScanner scanner = new DirScanner.Glob(this.step.includes, this.step.excludes);
+
+      this.listener.getLogger().printf(
+          "Setting scanner root to %s%n",
+          cwd.getRemote()
+      );
+
+      File f = new File(cwd.getRemote());
+      this.listener.getLogger().printf(
+          "Scanning %s%n",
+          f
+      );
+
+      scanner.scan(f, new FileVisitor() {
+        @Override
+        public boolean understandsSymlink() {
+          return true;
+        }
+
+        @Override
+        public void visitSymlink(File link, String target, String relativePath) throws IOException {
+          listener.getLogger().printf(
+              "Visiting Symlink:%s %n",
+              link
+          );
+        }
+
         @Override
         public void visit(File file, String s) throws IOException {
           Path path = file.toPath();
           String contentType;
+
+          listener.getLogger().printf(
+              "Probing contentType for %s.",
+              file
+          );
 
           try {
             contentType = java.nio.file.Files.probeContentType(path);
@@ -222,7 +301,19 @@ public class GitHubReleaseStep extends AbstractStepImpl {
             contentType = "application/octet-stream";
           }
 
-          release.uploadAsset(file, contentType);
+          listener.getLogger().printf(
+              "Uploading %s with contentType:%s %n",
+              file,
+              contentType
+          );
+
+          GHAsset asset = release.uploadAsset(file, contentType);
+
+          listener.getLogger().printf(
+              "Uploaded %s to %s %n",
+              file,
+              asset.getBrowserDownloadUrl()
+          );
         }
       });
 

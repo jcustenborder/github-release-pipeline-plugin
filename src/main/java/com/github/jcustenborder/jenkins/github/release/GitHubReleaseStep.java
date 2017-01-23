@@ -178,7 +178,7 @@ public class GitHubReleaseStep extends AbstractStepImpl {
 
     @Override
     public String getDisplayName() {
-      return "Read a maven project file.";
+      return "Create a release in a github project.";
     }
 
   }
